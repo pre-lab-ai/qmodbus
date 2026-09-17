@@ -1,0 +1,50 @@
+# Qt Creator and qmake state
+.qtcreator/
+.qtc_clangd/
+.qmake.stash
+
+# Generated build trees and IDE output
+build/
+build_*/
+debug/
+release/
+obj-*/
+Makefile
+Makefile.*
+*.pro.user
+*.pro.user.*
+
+# Compiled objects, libraries and generated Qt sources
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.res
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+
+# Application data and local runtime output
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+diagnostics/
+release_package/
+deploy_*/
+
+# NSIS and packaging output
+*.nsh
+*-setup.exe
+*.zip
+
+# Debian generated files (keep packaging sources)
+debian/debhelper-build-stamp
+debian/files
+debian/qmodbus.debhelper.log
+debian/qmodbus.substvars
+debian/qmodbus/

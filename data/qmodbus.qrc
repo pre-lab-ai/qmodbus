@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/images" >
+        <file>logo.png</file>
+    </qresource>
+    <qresource prefix="/config" >
+        <file>point_table.json</file>
+    </qresource>
+</RCC>
