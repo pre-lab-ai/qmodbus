@@ -4,7 +4,8 @@ ControlTransactionResult ControlTransaction::execute(IControlTransport &transpor
                                                      const PointDefinition &point,
                                                      int slave, int function,
                                                      const QVector<quint16> &raw,
-                                                     const QString &userRole)
+                                                     const QString &userRole,
+                                                     bool verifyReadback)
 {
     ControlTransactionResult result;
     const ControlValidation validation = ControlValidator::validateRaw(point, function, raw, userRole);
@@ -29,6 +30,15 @@ ControlTransactionResult ControlTransaction::execute(IControlTransport &transpor
         return result;
     }
     result.written = true;
+    // Rack Control entries are one-shot commands. A BCU may consume, clear,
+    // or transform the command immediately, so a readback mismatch is not a
+    // reliable indication that the Modbus write failed.
+    if (!verifyReadback)
+    {
+        result.readbackVerified = true;
+        result.accepted = true;
+        return result;
+    }
     QVector<quint16> readback(point.count);
     const int received = transport.readRegisters(point.address, point.count, readback.data());
     if (received != point.count)

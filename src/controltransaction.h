@@ -30,7 +30,8 @@ public:
                                             const PointDefinition &point,
                                             int slave, int function,
                                             const QVector<quint16> &raw,
-                                            const QString &userRole = QStringLiteral("operator"));
+                                            const QString &userRole = QStringLiteral("operator"),
+                                            bool verifyReadback = true);
 };
 
 #endif

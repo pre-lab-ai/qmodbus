@@ -1,5 +1,7 @@
 #include "acquisitionstore.h"
 
+#include "modbus.h"
+
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -304,8 +306,11 @@ bool AcquisitionStore::recordPollResult(const PollResult &result,
     const QualityCode quality = result.success ? QualityCode::Good : qualityCodeFromPollError(result.error);
     for (const PointDefinition &point : pointTable.points())
     {
+        const bool pcsSlaveWrite = point.block == QStringLiteral("PCS") &&
+                                    result.frame.function == MODBUS_FC_WRITE_MULTIPLE_REGISTERS;
         if (point.reserved || point.block != result.frame.block ||
-            !point.readFunctions.contains(result.frame.function) ||
+            (!pcsSlaveWrite && !point.readFunctions.contains(result.frame.function) &&
+             !point.writeFunctions.contains(result.frame.function)) ||
             point.lastAddress() < result.frame.address ||
             point.address > result.frame.lastAddress())
             continue;

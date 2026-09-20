@@ -28,7 +28,7 @@ Copy-Item -Force $template (Join-Path $configDirectory "settings.template.ini")
 
 $manifest = [ordered]@{
     product = "ModbusPC"
-    version = "0.1.0"
+    version = "0.1.1"
     build_timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
     qt = "6.11.2"
     compiler = "MSVC 2022 x64"
@@ -42,9 +42,9 @@ $manifest = [ordered]@{
 }
 $manifestPath = Join-Path $DeploymentDirectory "release_manifest.json"
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $manifestPath
-$hashPath = Join-Path $OutputDirectory "ModbusPC-0.1.0-sha256.txt"
+$hashPath = Join-Path $OutputDirectory "ModbusPC-0.1.1-sha256.txt"
 (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant() + "  qmodbus.exe" | Set-Content -Encoding ASCII $hashPath
-$zipPath = Join-Path $OutputDirectory "ModbusPC-0.1.0-win64.zip"
+$zipPath = Join-Path $OutputDirectory "ModbusPC-0.1.1-win64.zip"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 Compress-Archive -Path (Join-Path $DeploymentDirectory "*") -DestinationPath $zipPath -CompressionLevel Optimal
 Copy-Item -Force $manifestPath (Join-Path $OutputDirectory "release_manifest.json")

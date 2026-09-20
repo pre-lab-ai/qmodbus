@@ -70,6 +70,7 @@ class PointTable
 public:
     bool load(const QString &fileName, QStringList *errors = nullptr);
     bool loadJson(const QByteArray &json, QStringList *errors = nullptr);
+    void append(const PointTable &other);
     bool validate(QStringList *errors = nullptr) const;
 
     const QVector<PointDefinition> &points() const { return m_points; }

@@ -23,14 +23,61 @@ int main(int argc, char **argv)
     QStringList errors;
     bool ok = table.load(QStringLiteral(":/config/point_table.json"), &errors);
     ok &= require(ok, QStringLiteral("load point table: %1").arg(errors.join(';')));
+	PointTable pcsTable;
+	QStringList pcsErrors;
+	ok &= require(pcsTable.load(QStringLiteral(":/config/pcs_point_table.json"), &pcsErrors),
+	              QStringLiteral("load PCS point table: %1").arg(pcsErrors.join(';')));
+	table.append(pcsTable);
+	ok &= require(table.validate(&errors), QStringLiteral("validate combined point table: %1").arg(errors.join(';')));
+	const auto checkMeasure = [&table, &ok](const QString &key, const QString &unit,
+	                                      double scale, double raw, double expected) {
+		const PointDefinition *point = table.findByKey(key);
+		ok &= require(point != nullptr, QStringLiteral("point exists: %1").arg(key));
+		if (!point)
+			return;
+		ok &= require(point->unit == unit,
+		              QStringLiteral("unit for %1 is %2").arg(key, unit));
+		ok &= require(qFuzzyCompare(point->scale + 1.0, scale + 1.0),
+		              QStringLiteral("scale for %1 is %2").arg(key).arg(scale));
+		ok &= require(qFuzzyCompare(point->decode(QVector<quint16>() << static_cast<quint16>(raw)).toDouble() + 1.0,
+		                            expected + 1.0),
+		              QStringLiteral("decoded value for %1").arg(key));
+	};
+	checkMeasure(QStringLiteral("max_allowed_chg_cur_limit"), QStringLiteral("A"), 0.1, 125, 12.5);
+	checkMeasure(QStringLiteral("max_allowed_dchg_cur_limit"), QStringLiteral("A"), 0.1, 125, 12.5);
+	checkMeasure(QStringLiteral("display_SOC"), QStringLiteral("%"), 0.1, 876, 87.6);
+	checkMeasure(QStringLiteral("SOH"), QStringLiteral("%"), 0.1, 990, 99.0);
+	checkMeasure(QStringLiteral("rack_soe"), QStringLiteral("%"), 0.1, 765, 76.5);
+	checkMeasure(QStringLiteral("total_vol"), QStringLiteral("V"), 0.1, 1250, 125.0);
+	checkMeasure(QStringLiteral("total_cur"), QStringLiteral("A"), 0.1, 125, 12.5);
+	checkMeasure(QStringLiteral("max_allowed_chg_power"), QStringLiteral("kW"), 0.1, 500, 50.0);
+	checkMeasure(QStringLiteral("max_allowed_dchg_power"), QStringLiteral("kW"), 0.1, 500, 50.0);
 
     BusinessViewWidget widget;
+	widget.setExcludedBlocks({QStringLiteral("PCS")});
     widget.setPointTable(table);
     const auto tabs = widget.findChildren<QTabBar *>();
     ok &= require(!tabs.isEmpty(), QStringLiteral("business block tabs exist"));
     if (!tabs.isEmpty())
         ok &= require(tabs.first()->count() == 8,
                       QStringLiteral("overview plus control, detail, measure, diag and signal tabs"));
+
+	BusinessViewWidget pcsWidget;
+	pcsWidget.setBlockFilter(QStringLiteral("PCS"));
+	pcsWidget.setPointTable(table);
+	const auto pcsTabs = pcsWidget.findChildren<QTabBar *>();
+	ok &= require(!pcsTabs.isEmpty() && pcsTabs.first()->count() == 2,
+	              QStringLiteral("PCS page exposes overview and PCS tabs"));
+	const auto pcsTables = pcsWidget.findChildren<QTableWidget *>();
+	if (!pcsTables.isEmpty())
+	{
+		QTableWidget *pcsTableWidget = pcsTables.first();
+		ok &= require(pcsTableWidget->rowCount() == 16,
+		              QStringLiteral("PCS page exposes the 16 PCS registers"));
+		ok &= require(pcsTableWidget->item(0, 0) &&
+					pcsTableWidget->item(0, 0)->text() == QStringLiteral("PCS工作状态"),
+					QStringLiteral("PCS work state is displayed first"));
+	}
     ok &= require(widget.findChildren<QLabel *>().indexOf(nullptr) < 0,
                   QStringLiteral("business view labels are available"));
     ok &= require(widget.findChildren<QTableWidget *>().size() == 1,
@@ -114,15 +161,33 @@ int main(int argc, char **argv)
     state.rawValue = QVariantList{2};
     state.engineeringValue = 2.0;
     state.quality = QualityCode::Good;
-    widget.setSamples({state});
+    AcquisitionSample bcuState;
+    bcuState.pointKey = QStringLiteral("BCU_state");
+    bcuState.displayName = QStringLiteral("系统状态");
+    bcuState.block = QStringLiteral("Rack Signal");
+    bcuState.address = 0x0019;
+    bcuState.rawValue = QVariantList{0};
+    bcuState.engineeringValue = 0.0;
+    bcuState.quality = QualityCode::Good;
+    widget.setSamples({state, bcuState});
     if (!tabs.isEmpty())
-        tabs.first()->setCurrentIndex(signalIndex);
+        tabs.first()->setCurrentIndex(0);
     bool foundCharge = false;
     for (int row = 0; mainTable && row < mainTable->rowCount(); ++row)
         if (mainTable->item(row, 2) && mainTable->item(row, 2)->text() == QStringLiteral("current_state"))
             foundCharge = mainTable->item(row, 3)->text() == QStringLiteral("0x0002") &&
                           mainTable->item(row, 7)->text() == QStringLiteral("0：空闲；1：放电；2：充电");
     ok &= require(foundCharge, QStringLiteral("rack signal enum value and definition are localized"));
+    bool foundNormal = false;
+    QString bcuStateValue;
+    for (int row = 0; mainTable && row < mainTable->rowCount(); ++row)
+        if (mainTable->item(row, 2) && mainTable->item(row, 2)->text() == QStringLiteral("BCU_state"))
+        {
+            bcuStateValue = mainTable->item(row, 3)->text();
+            foundNormal = bcuStateValue == QStringLiteral("正常");
+        }
+    ok &= require(foundNormal, QStringLiteral("BCU state zero is displayed as normal (value=%1)")
+                  .arg(bcuStateValue));
 
     AcquisitionSample alarm;
     alarm.pointKey = QStringLiteral("extern_critical_alarm");

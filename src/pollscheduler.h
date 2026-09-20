@@ -51,7 +51,9 @@ class PollPlan
 public:
     static QVector<PollFrame> fromPointTable(const PointTable &table,
                                                int maxRegisters = 120,
-                                               int periodMs = 1000);
+                                               int periodMs = 1000,
+                                               const QString &includeBlock = QString(),
+                                               const QStringList &excludeBlocks = QStringList());
     static QVector<PollFrame> splitRange(const QString &block, int function,
                                          int address, int count,
                                          int maxRegisters = 120,

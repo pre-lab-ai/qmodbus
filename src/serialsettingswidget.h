@@ -21,6 +21,7 @@ public:
 	virtual ModbusSession* session() { return &m_session; }
 
 	virtual int setupModbusPort();
+	int setupModbusPort(bool activate);
 
 protected:
 	virtual void changeModbusInterface(const QString &port, char parity) = 0;

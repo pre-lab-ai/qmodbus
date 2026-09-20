@@ -26,6 +26,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QFutureWatcher>
 #include <QTimer>
 
 #include "modbus.h"
@@ -49,7 +50,7 @@ public:
     {
         setupUi( this );
         aboutTextLabel->setText(
-            aboutTextLabel->text().arg( "0.1.0" ) );
+            aboutTextLabel->text().arg( "0.1.1" ) );
     }
 } ;
 
@@ -98,6 +99,10 @@ private slots:
     void onRtuPortActive(bool active);
     void onAsciiPortActive(bool active);
     void onTcpPortActive(bool active);
+    void onSlaveRawData(const QByteArray &frame, bool outgoing);
+    void onSlaveRegistersWritten(int address, const QVector<quint16> &values);
+    void flushSlaveWrite();
+    void flushSlaveRawData();
     void resetStatus( void );
     void setStatusError(const QString &msg);
     void onPollResult(const PollResult &result);
@@ -108,6 +113,7 @@ private slots:
     void onRawDataScrollToggled(bool enabled);
     void onBusMonitorScrollToggled(bool enabled);
     void onControlWriteRequested(const QString &pointKey, const QString &valueText);
+    void onControlWriteFinished();
     void onAlarmAcknowledgeRequested(const QString &sourceKey, int bit);
 
 private:
@@ -122,6 +128,7 @@ private:
     void processAlarmTransitions(const PollResult &result);
     bool ensureSessionConfigured();
     void resizeBusMonitorColumns();
+    bool allowDatabaseWrite(const QString &key, const QDateTime &timestamp);
 
     Ui::MainWindowClass * ui;
     ModbusSession * m_session;
@@ -130,10 +137,12 @@ private:
     QTimer * m_pollTimer;
     QTimer * m_statusTimer;
     PointTable m_pointTable;
+    PointTable m_pcsPointTable;
     AcquisitionStore m_acquisitionStore;
     ModbusSessionTransport m_transport;
     PollScheduler m_scheduler;
     BusinessViewWidget *m_businessView;
+    BusinessViewWidget *m_pcsView;
     AlarmStateModel m_alarmStates;
     bool m_tcpActive;
     bool m_poll;
@@ -141,6 +150,17 @@ private:
     bool m_busMonitorColumnsManuallyResized;
     bool m_resizingBusMonitorColumns;
     QString m_rawDataLine;
+    QFutureWatcher<ControlTransactionResult> *m_controlWriteWatcher;
+    PointDefinition m_pendingControlPoint;
+    int m_pendingControlSlave;
+    int m_pendingControlFunction;
+    QVector<quint16> m_pendingControlValues;
+    ModbusSession *m_pendingControlSession;
+    PollResult m_pendingSlaveWrite;
+    bool m_slaveWriteFlushScheduled;
+    QString m_pendingSlaveRawText;
+    bool m_slaveRawFlushScheduled;
+    QHash<QString, QDateTime> m_lastDatabaseWrite;
 };
 
 #endif // MAINWINDOW_H

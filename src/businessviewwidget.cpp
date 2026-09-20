@@ -11,6 +11,8 @@
 
 #include <algorithm>
 
+#include "modbus.h"
+
 namespace
 {
 struct DisplayRow
@@ -134,6 +136,28 @@ BusinessViewWidget::BusinessViewWidget(QWidget *parent) :
     setAcquisitionRunning(false);
 }
 
+void BusinessViewWidget::setBlockFilter(const QString &block)
+{
+    m_blockFilter = block;
+}
+
+void BusinessViewWidget::setExcludedBlocks(const QStringList &blocks)
+{
+    m_excludedBlocks = blocks;
+}
+
+void BusinessViewWidget::setPassiveMode(bool passive)
+{
+    m_passive = passive;
+    m_startButton->setVisible(!passive);
+    m_stopButton->setVisible(!passive);
+    if (passive)
+    {
+        m_running = false;
+        m_summary->setText(tr("Waiting for BCU writes"));
+    }
+}
+
 void BusinessViewWidget::setPointTable(const PointTable &table)
 {
     m_samples.clear();
@@ -167,8 +191,15 @@ void BusinessViewWidget::setPointTable(const PointTable &table)
         QStringLiteral("max_allowed_chg_cur_limit"),
         QStringLiteral("max_allowed_dchg_cur_limit")
     };
+    if (!m_blockFilter.isEmpty())
+        m_overviewKeys.clear();
     for (const PointDefinition &point : table.points())
     {
+        if ((!m_blockFilter.isEmpty() && point.block != m_blockFilter) ||
+            m_excludedBlocks.contains(point.block))
+            continue;
+        if (!m_blockFilter.isEmpty())
+            m_overviewKeys.append(point.key);
         if (point.reserved)
             continue;
         if (point.block == QStringLiteral("Alarm parameters"))
@@ -257,9 +288,14 @@ void BusinessViewWidget::applyPollResult(const PollResult &result, const PointTa
     bool dataChanged = false;
     for (const PointDefinition &point : table.points())
     {
+        if (!m_pointDefinitions.contains(point.key))
+            continue;
+        const bool pcsSlaveWrite = point.block == QStringLiteral("PCS") &&
+                                    result.frame.function == MODBUS_FC_WRITE_MULTIPLE_REGISTERS;
         if (point.reserved || point.block != result.frame.block ||
             point.block == QStringLiteral("Alarm parameters") ||
-            !point.readFunctions.contains(result.frame.function) ||
+            (!pcsSlaveWrite && !point.readFunctions.contains(result.frame.function) &&
+             !point.writeFunctions.contains(result.frame.function)) ||
             point.lastAddress() < result.frame.address || point.address > result.frame.lastAddress())
             continue;
         frameMatched = true;
@@ -388,7 +424,7 @@ QString BusinessViewWidget::localizedDefinition(const PointDefinition &point) co
         {QStringLiteral("extern_alarm_2"), QStringLiteral("0：正常；1：告警")},
         {QStringLiteral("extern_warn_2"), QStringLiteral("0：正常；1：预警")},
         {QStringLiteral("pre_power_stage"), QStringLiteral("0：空闲；1/2：启动；3：成功；4：失败")},
-        {QStringLiteral("BCU_state"), QStringLiteral("0：空闲；1：禁止充电；2：禁止放电；3：待机；4：停止")},
+        {QStringLiteral("BCU_state"), QStringLiteral("0：正常；1：禁止充电；2：禁止放电；3：待机；4：停止")},
         {QStringLiteral("current_state"), QStringLiteral("0：空闲；1：放电；2：充电")},
         {QStringLiteral("Heat management status"), QStringLiteral("0：关闭；1：内循环；2：制冷；3：制热")},
         {QStringLiteral("BMS fault level"), QStringLiteral("0：正常；1：一级告警；2：二级告警；3：三级告警")}
@@ -437,7 +473,7 @@ QString BusinessViewWidget::displayPointValue(const PointDefinition &point,
         if (raw == 4) return QStringLiteral("失败");
     }
     if (point.key == QStringLiteral("BCU_state"))
-        return QStringList({QStringLiteral("空闲"), QStringLiteral("禁止充电"),
+        return QStringList({QStringLiteral("正常"), QStringLiteral("禁止充电"),
                             QStringLiteral("禁止放电"), QStringLiteral("待机"),
                             QStringLiteral("停止")}).value(static_cast<int>(raw), displayValue(sample.engineeringValue));
     if (point.key == QStringLiteral("current_state"))
@@ -834,8 +870,16 @@ void BusinessViewWidget::updateSummary()
         if (sample.quality == QualityCode::Good)
             ++good;
     }
-    m_summary->setText(tr("%1 points, %2 good, %3")
-                      .arg(m_samples.size()).arg(good)
-                      .arg(m_running ? tr("running") : tr("stopped")));
+    if (m_passive)
+    {
+        m_summary->setText(tr("%1 points, %2 good, waiting for BCU writes")
+                          .arg(m_samples.size()).arg(good));
+    }
+    else
+    {
+        m_summary->setText(tr("%1 points, %2 good, %3")
+                          .arg(m_samples.size()).arg(good)
+                          .arg(m_running ? tr("running") : tr("stopped")));
+    }
     Q_UNUSED(known);
 }

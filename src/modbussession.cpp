@@ -20,7 +20,9 @@ bool ModbusSession::adoptAndConnect(modbus_t* context)
 
     if( modbus_connect(context) == -1 )
     {
+        const int savedErrno = errno;
         modbus_free(context);
+        errno = savedErrno;
         return false;
     }
 

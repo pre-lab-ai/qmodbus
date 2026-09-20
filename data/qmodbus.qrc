@@ -4,5 +4,6 @@
     </qresource>
     <qresource prefix="/config" >
         <file>point_table.json</file>
+        <file>pcs_point_table.json</file>
     </qresource>
 </RCC>

@@ -38,6 +38,8 @@ bool blockContains(const QString &block, int address, int lastAddress)
         return address >= 0x1000 && lastAddress <= 0x6000;
     if (block == QStringLiteral("Alarm parameters"))
         return address >= 0x6001 && lastAddress <= 0x7000;
+    if (block == QStringLiteral("PCS"))
+        return address >= 0x0000 && lastAddress <= 0x000F;
     return false;
 }
 
@@ -250,6 +252,11 @@ bool PointTable::loadJson(const QByteArray &json, QStringList *errors)
     if (!target->isEmpty())
         return false;
     return validate(target);
+}
+
+void PointTable::append(const PointTable &other)
+{
+    m_points += other.m_points;
 }
 
 bool PointTable::validate(QStringList *errors) const

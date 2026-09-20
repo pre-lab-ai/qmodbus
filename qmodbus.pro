@@ -1,12 +1,13 @@
 TARGET = qmodbus
 TEMPLATE = app
-VERSION = 0.1.0
+VERSION = 0.1.1
 
-QT += gui widgets serialport sql
+QT += gui widgets serialport sql network concurrent
 
 SOURCES += src/main.cpp \
     src/mainwindow.cpp \
     src/modbussession.cpp \
+    src/modbusresponder.cpp \
     src/pointmodel.cpp \
     src/pollscheduler.cpp \
     src/acquisitionstore.cpp \
@@ -29,6 +30,7 @@ SOURCES += src/main.cpp \
 
 HEADERS += src/mainwindow.h \
     src/modbussession.h \
+    src/modbusresponder.h \
     src/pointmodel.h \
     src/pollscheduler.h \
     src/acquisitionstore.h \
@@ -40,6 +42,8 @@ HEADERS += src/mainwindow.h \
     src/BatchProcessor.h \
     3rdparty/libmodbus/src/modbus.h \
     src/serialsettingswidget.h \
+    src/rtusettingswidget.h \
+    src/asciisettingswidget.h \
     src/imodbus.h \
     src/tcpipsettingswidget.h \
     src/ipaddressctrl.h \

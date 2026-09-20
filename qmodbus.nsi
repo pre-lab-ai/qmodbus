@@ -1,7 +1,7 @@
 
 ############################## Symbol Definitions ##############################
 !define APP_NAME "ModbusPC"
-!define VERSION "0.1.0"
+!define VERSION "0.1.1"
 !define COMPANY "Foxconn"
 !define WEBSITE ""
 !define COPYRIGHT "Copyright (C) Foxconn"

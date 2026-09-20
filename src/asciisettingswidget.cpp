@@ -6,6 +6,7 @@
 AsciiSettingsWidget::AsciiSettingsWidget(QWidget *parent) :
     SerialSettingsWidget(parent)
 {
+    ui->slaveMode->hide();
 }
 
 AsciiSettingsWidget::~AsciiSettingsWidget()

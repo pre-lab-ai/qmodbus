@@ -10,6 +10,8 @@ namespace
 {
 int preferredFunction(const PointDefinition &point)
 {
+    if (point.block == QStringLiteral("PCS"))
+        return point.readFunctions.contains(3) ? 3 : 4;
     if (point.block == QStringLiteral("Rack Control") ||
         point.block == QStringLiteral("Alarm parameters"))
         return point.readFunctions.contains(3) ? 3 : 4;
@@ -46,7 +48,9 @@ QVector<PollFrame> PollPlan::splitRange(const QString &block, int function,
 }
 
 QVector<PollFrame> PollPlan::fromPointTable(const PointTable &table,
-                                           int maxRegisters, int periodMs)
+                                           int maxRegisters, int periodMs,
+                                           const QString &includeBlock,
+                                           const QStringList &excludeBlocks)
 {
     struct Range
     {
@@ -59,6 +63,9 @@ QVector<PollFrame> PollPlan::fromPointTable(const PointTable &table,
     QVector<Range> ranges;
     for (const PointDefinition &point : table.points())
     {
+        if ((!includeBlock.isEmpty() && point.block != includeBlock) ||
+            excludeBlocks.contains(point.block))
+            continue;
         // Alarm parameters are configuration/write points.  They are not
         // displayed by the acquisition pages and several BCU firmware
         // versions reject reads in this range (for example 0x6065) with
@@ -103,8 +110,14 @@ QVector<PollFrame> PollPlan::fromPointTable(const PointTable &table,
 
     QVector<PollFrame> frames;
     for (const Range &range : ranges)
+    {
+        // BCU firmware is limited to ten registers per request. PCS follows
+        // the normal Modbus limit, so keep its 16-register table in one frame.
+        const int rangeMaxRegisters = range.block == QStringLiteral("PCS")
+                ? qMax(maxRegisters, 16) : maxRegisters;
         frames += splitRange(range.block, range.function, range.first,
-                             range.last - range.first + 1, maxRegisters, periodMs);
+                             range.last - range.first + 1, rangeMaxRegisters, periodMs);
+    }
     return frames;
 }
 

@@ -80,6 +80,19 @@ int main(int argc, char **argv)
     require(plan.size() == 1 && plan.first().address == 528 && plan.first().count == 4,
             QStringLiteral("contiguous points merge into one frame"));
 
+    PointTable pcsTable;
+    errors.clear();
+    const QByteArray pcsJson = QByteArrayLiteral(
+        "{\"points\":["
+        "{\"display_name\":\"pcs\",\"key\":\"pcs\",\"block\":\"PCS\",\"address\":0,\"count\":16,\"type\":\"u16\",\"attribute\":\"R\",\"read_functions\":[3],\"reserved\":false}]}" );
+    require(pcsTable.loadJson(pcsJson, &errors),
+            QStringLiteral("PCS table loads: %1").arg(errors.join(';')));
+    const QVector<PollFrame> pcsPlan = PollPlan::fromPointTable(pcsTable, 10, 20,
+                                                                  QStringLiteral("PCS"));
+    require(pcsPlan.size() == 1 && pcsPlan.first().function == 3 &&
+            pcsPlan.first().address == 0 && pcsPlan.first().count == 16,
+            QStringLiteral("PCS registers use one function 03 frame"));
+
     FakeTransport transport;
     transport.failFirstReads = 1;
     PollScheduler scheduler;

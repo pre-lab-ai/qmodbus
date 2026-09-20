@@ -8,7 +8,8 @@ SerialSettingsWidget::SerialSettingsWidget(QWidget *parent) :
 	ui(new Ui::SerialSettingsWidget)
 {
 	ui->setupUi(this);
-	enableGuiItems(false);
+	setupModbusPort(false);
+	enableGuiItems(true);
 }
 
 SerialSettingsWidget::~SerialSettingsWidget()
@@ -18,6 +19,11 @@ SerialSettingsWidget::~SerialSettingsWidget()
 }
 
 int SerialSettingsWidget::setupModbusPort()
+{
+	return setupModbusPort(true);
+}
+
+int SerialSettingsWidget::setupModbusPort(bool activate)
 {
 	QSettings s;
 
@@ -41,23 +47,29 @@ int SerialSettingsWidget::setupModbusPort()
 	}
 	ui->serialPort->setCurrentIndex( portIndex );
 
-	ui->baud->setCurrentIndex( ui->baud->findText( s.value( "serialbaudrate" ).toString() ) );
-	ui->parity->setCurrentIndex( ui->parity->findText( s.value( "serialparity" ).toString() ) );
-	ui->stopBits->setCurrentIndex( ui->stopBits->findText( s.value( "serialstopbits" ).toString() ) );
-	ui->dataBits->setCurrentIndex( ui->dataBits->findText( s.value( "serialdatabits" ).toString() ) );
+	const int baudIndex = ui->baud->findText(s.value("serialbaudrate", "9600").toString());
+	const int parityIndex = ui->parity->findText(s.value("serialparity", "none").toString());
+	const int stopBitsIndex = ui->stopBits->findText(s.value("serialstopbits", "1").toString());
+	const int dataBitsIndex = ui->dataBits->findText(s.value("serialdatabits", "8").toString());
+	ui->baud->setCurrentIndex(baudIndex >= 0 ? baudIndex : ui->baud->findText("9600"));
+	ui->parity->setCurrentIndex(parityIndex >= 0 ? parityIndex : ui->parity->findText("none"));
+	ui->stopBits->setCurrentIndex(stopBitsIndex >= 0 ? stopBitsIndex : ui->stopBits->findText("1"));
+	ui->dataBits->setCurrentIndex(dataBitsIndex >= 0 ? dataBitsIndex : ui->dataBits->findText("8"));
 
-	connect( ui->serialPort, SIGNAL( currentIndexChanged( int ) ),
-			this, SLOT( changeSerialPort( int ) ) );
-	connect( ui->baud, SIGNAL( currentIndexChanged( int ) ),
-			this, SLOT( changeSerialPort( int ) ) );
-	connect( ui->dataBits, SIGNAL( currentIndexChanged( int ) ),
-			this, SLOT( changeSerialPort( int ) ) );
-	connect( ui->stopBits, SIGNAL( currentIndexChanged( int ) ),
-			this, SLOT( changeSerialPort( int ) ) );
-	connect( ui->parity, SIGNAL( currentIndexChanged( int ) ),
-			this, SLOT( changeSerialPort( int ) ) );
+	if (activate) {
+		connect( ui->serialPort, SIGNAL( currentIndexChanged( int ) ),
+				this, SLOT( changeSerialPort( int ) ) );
+		connect( ui->baud, SIGNAL( currentIndexChanged( int ) ),
+				this, SLOT( changeSerialPort( int ) ) );
+		connect( ui->dataBits, SIGNAL( currentIndexChanged( int ) ),
+				this, SLOT( changeSerialPort( int ) ) );
+		connect( ui->stopBits, SIGNAL( currentIndexChanged( int ) ),
+				this, SLOT( changeSerialPort( int ) ) );
+		connect( ui->parity, SIGNAL( currentIndexChanged( int ) ),
+				this, SLOT( changeSerialPort( int ) ) );
 
-	changeSerialPort( portIndex );
+		changeSerialPort( portIndex );
+	}
 	return portIndex;
 }
 
@@ -136,6 +148,6 @@ void SerialSettingsWidget::on_checkBox_clicked(bool checked)
 	else {
 		releaseSerialModbus();
 	}
-	enableGuiItems(checked);
+	enableGuiItems(!checked);
 	emit serialPortActive(checked);
 }

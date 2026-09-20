@@ -46,6 +46,7 @@ public:
     }
     int readRegisters(int address, int count, quint16 *values) override
     {
+        ++m_readCount;
         if (m_fault == Fault::Timeout)
         {
             m_error = QStringLiteral("timeout");
@@ -56,10 +57,12 @@ public:
         return count;
     }
     QString lastError() const override { return m_error; }
+    int readCount() const { return m_readCount; }
 private:
     Fault m_fault;
     int m_slave = 0;
     QHash<int, quint16> m_registers;
+    int m_readCount = 0;
     QString m_error;
 };
 
@@ -106,5 +109,12 @@ int main(int argc, char **argv)
     const auto mismatchResult = ControlTransaction::execute(mismatch, p, 1, 6, raw);
     ok &= require(mismatchResult.written && !mismatchResult.readbackVerified && !mismatchResult.accepted,
                   QStringLiteral("readback mismatch"));
+    FakeSlave commandMismatch(Fault::Mismatch);
+    const auto commandResult = ControlTransaction::execute(commandMismatch, p, 1, 6, raw,
+                                                           QStringLiteral("operator"), false);
+    ok &= require(commandResult.accepted && commandResult.written && commandResult.readbackVerified,
+                  QStringLiteral("one-shot command accepted without readback"));
+    ok &= require(commandMismatch.readCount() == 0,
+                  QStringLiteral("one-shot command skips readback request"));
     return ok ? 0 : 1;
 }

@@ -4,6 +4,7 @@
 #include <QWidget>
 #include "imodbus.h"
 #include "modbussession.h"
+#include "modbusresponder.h"
 
 namespace Ui {
 class TcpIpSettingsWidget;
@@ -31,11 +32,17 @@ private slots:
 
 signals:
     void tcpPortActive(bool val);
+    void slavePortActive(bool val);
+    void slaveRegistersWritten(int address, const QVector<quint16> &values);
+    void slaveRawData(const QByteArray &frame, bool outgoing);
     void connectionError(const QString &msg);
 
 private:
+    void setSlaveMode(bool enabled);
+
     Ui::TcpIpSettingsWidget *ui;
     ModbusSession            m_session;
+    ModbusResponder          m_responder;
 };
 
 #endif // TCPIPSETTINGSWIDGET_H

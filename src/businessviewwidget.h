@@ -19,6 +19,9 @@ class BusinessViewWidget : public QWidget
 public:
     explicit BusinessViewWidget(QWidget *parent = nullptr);
 
+    void setBlockFilter(const QString &block);
+    void setExcludedBlocks(const QStringList &blocks);
+    void setPassiveMode(bool passive);
     void setPointTable(const PointTable &table);
     void setSamples(const QVector<AcquisitionSample> &samples);
     void applyPollResult(const PollResult &result, const PointTable &table,
@@ -67,8 +70,11 @@ private:
     QSet<QString> m_pointWriteEnabled;
     QSet<QString> m_expandedSignalKeys;
     QStringList m_blocks;
+    QString m_blockFilter;
+    QStringList m_excludedBlocks;
     QStringList m_overviewKeys;
     bool m_running;
+    bool m_passive = false;
     QTimer *m_refreshTimer;
 };
 

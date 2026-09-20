@@ -32,6 +32,7 @@
 #include <QSet>
 #include <QMessageBox>
 #include <QHeaderView>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <errno.h>
 
@@ -57,12 +58,19 @@ MainWindow::MainWindow( QWidget * _parent ) :
 	m_transport(nullptr),
 	m_scheduler(this),
 	m_businessView(nullptr),
+	m_pcsView(nullptr),
 	m_tcpActive(false),
 	m_poll(false),
 	m_dataRecordingEnabled(true),
 	m_busMonitorColumnsManuallyResized(false),
 	m_resizingBusMonitorColumns(false),
-	m_rawDataLine()
+	m_rawDataLine(),
+	m_controlWriteWatcher(nullptr),
+	m_pendingControlSlave(0),
+	m_pendingControlFunction(0),
+	m_pendingControlSession(nullptr),
+	m_slaveWriteFlushScheduled(false),
+	m_slaveRawFlushScheduled(false)
 {
 	ui->setupUi(this);
 	// Keep diagnostic widgets bounded during long-running acquisition. These
@@ -94,6 +102,14 @@ MainWindow::MainWindow( QWidget * _parent ) :
 	connect( ui->rtuSettingsWidget,   SIGNAL(serialPortActive(bool)), this, SLOT(onRtuPortActive(bool)));
 	connect( ui->asciiSettingsWidget, SIGNAL(serialPortActive(bool)), this, SLOT(onAsciiPortActive(bool)));
 	connect( ui->tcpSettingsWidget,   SIGNAL(tcpPortActive(bool)),    this, SLOT(onTcpPortActive(bool)));
+	connect( ui->rtuSettingsWidget,   SIGNAL(slaveRegistersWritten(int,QVector<quint16>)),
+			this, SLOT(onSlaveRegistersWritten(int,QVector<quint16>)));
+	connect( ui->tcpSettingsWidget,   SIGNAL(slaveRegistersWritten(int,QVector<quint16>)),
+			this, SLOT(onSlaveRegistersWritten(int,QVector<quint16>)));
+	connect(ui->rtuSettingsWidget, &RtuSettingsWidget::slaveRawData,
+			this, &MainWindow::onSlaveRawData);
+	connect(ui->tcpSettingsWidget, &TcpIpSettingsWidget::slaveRawData,
+			this, &MainWindow::onSlaveRawData);
 
 	connect( ui->rtuSettingsWidget,   SIGNAL(connectionError(const QString&)), this, SLOT(setStatusError(const QString&)));
 	connect( ui->asciiSettingsWidget, SIGNAL(connectionError(const QString&)), this, SLOT(setStatusError(const QString&)));
@@ -148,11 +164,24 @@ MainWindow::MainWindow( QWidget * _parent ) :
 	}
 	else
 	{
+		QStringList pcsErrors;
+		if (!m_pcsPointTable.load(QStringLiteral(":/config/pcs_point_table.json"), &pcsErrors))
+		{
+			setStatusError(tr("PCS point table invalid: %1").arg(pcsErrors.join("; ")));
+		}
+		else
+		{
+			m_pointTable.append(m_pcsPointTable);
+			QStringList combinedErrors;
+			if (!m_pointTable.validate(&combinedErrors))
+				setStatusError(tr("Combined point table invalid: %1").arg(combinedErrors.join("; ")));
+		}
 		m_statusText->setText( tr( "Point table loaded: %1 points" ).arg( m_pointTable.points().size() ) );
 	}
 
 	m_businessView = new BusinessViewWidget(this);
 	m_businessView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	m_businessView->setExcludedBlocks({QStringLiteral("PCS")});
 	m_businessView->setPointTable(m_pointTable);
 	ui->tabWidget->insertTab(1, m_businessView, tr("BCU/EMS"));
 	ui->tabWidget->setCurrentIndex(0);
@@ -166,6 +195,21 @@ MainWindow::MainWindow( QWidget * _parent ) :
 			this, &MainWindow::onControlWriteRequested);
 	connect(m_businessView, &BusinessViewWidget::alarmAcknowledgeRequested,
 			this, &MainWindow::onAlarmAcknowledgeRequested);
+
+	m_pcsView = new BusinessViewWidget(this);
+	m_pcsView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	m_pcsView->setBlockFilter(QStringLiteral("PCS"));
+	m_pcsView->setPassiveMode(true);
+	m_pcsView->setPointTable(m_pointTable);
+	ui->tabWidget->insertTab(2, m_pcsView, tr("BCU/PCS"));
+	connect(m_pcsView, &BusinessViewWidget::startAcquisitionRequested,
+			this, &MainWindow::startBackgroundAcquisition);
+	connect(m_pcsView, &BusinessViewWidget::stopAcquisitionRequested,
+			this, &MainWindow::stopBackgroundAcquisition);
+	connect(m_pcsView, &BusinessViewWidget::dataRecordingToggled,
+			this, &MainWindow::setDataRecordingEnabled);
+	connect(m_pcsView, &BusinessViewWidget::controlWriteRequested,
+			this, &MainWindow::onControlWriteRequested);
 
 	// Keep mutable data outside the installation directory so upgrades do not
 	// overwrite configuration or historical samples.
@@ -207,10 +251,6 @@ MainWindow::MainWindow( QWidget * _parent ) :
 		}
 	}
 
-	QTimer * t = new QTimer( this );
-	connect( t, SIGNAL(timeout()), this, SLOT(pollForDataOnBus()));
-	t->start( 5 );
-
 	m_pollTimer = new QTimer( this );
 	connect( m_pollTimer, SIGNAL(timeout()), this, SLOT(sendModbusRequest()));
 
@@ -222,6 +262,8 @@ MainWindow::MainWindow( QWidget * _parent ) :
 
 MainWindow::~MainWindow()
 {
+	if (m_controlWriteWatcher)
+		m_controlWriteWatcher->waitForFinished();
 	delete ui;
 }
 
@@ -580,6 +622,12 @@ void MainWindow::enableHexView( void )
 
 void MainWindow::sendModbusRequest( void )
 {
+	if (ui->rtuSettingsWidget->isSlaveMode() &&
+		(!m_session || !m_session->isOpen() || m_session == ui->rtuSettingsWidget->session()))
+	{
+		setStatusError(tr("RTU Slave mode is passive; activate an independent Modbus client before sending a request."));
+		return;
+	}
 	if (m_scheduler.isRunning())
 	{
 		setStatusError(tr("Stop background acquisition before sending a manual request"));
@@ -926,9 +974,7 @@ void MainWindow::recordWriteAudit(int slave, int function, int address, int coun
 	if (!m_acquisitionStore.isOpen())
 		return;
 
-	QVector<AcquisitionSample> latest;
 	QString storeError;
-	latest = m_acquisitionStore.latestSamples(QStringLiteral("local"), slave, QString(), &storeError);
 	const bool accepted = result == count;
 	CommunicationEvent communication;
 	communication.deviceId = QStringLiteral("local");
@@ -952,9 +998,6 @@ void MainWindow::recordWriteAudit(int slave, int function, int address, int coun
 		if (!point.canWrite() || !point.writeFunctions.contains(function) ||
 			point.address < address || point.lastAddress() > address + count - 1)
 			continue;
-		QVariant oldValue;
-		for (const AcquisitionSample &sample : latest)
-			if (sample.pointKey == point.key) { oldValue = sample.engineeringValue; break; }
 		QVector<quint16> pointRaw;
 		if (accepted)
 			pointRaw = newValues.mid(point.address - address, point.count);
@@ -964,7 +1007,10 @@ void MainWindow::recordWriteAudit(int slave, int function, int address, int coun
 		event.pointKey = point.key;
 		event.displayName = point.displayName;
 		event.slaveId = slave;
-		event.oldValue = oldValue;
+		// Do not query the full acquisition history from the GUI thread. The
+		// control result is already known; recording the new value is sufficient
+		// for the audit trail and keeps completion responsive.
+		event.oldValue = QVariant();
 		event.newValue = accepted ? point.decode(pointRaw) : QVariant();
 		event.result = accepted ? QStringLiteral("accepted") : QStringLiteral("failed");
 		event.message = message;
@@ -1036,8 +1082,10 @@ void MainWindow::configureScheduler(ModbusSession *session)
 	m_scheduler.setTransport(&m_transport);
 	// The BCU accepts at most 10 registers per Modbus request.  The generic
 	// Modbus limit is larger, but using it here makes the BCU return an
-	// exception and every affected point is shown as PROTOCOL_ERROR.
-	m_scheduler.setPlan(PollPlan::fromPointTable(m_pointTable, 10, 1000));
+	// exception and every affected point is shown as PROTOCOL_ERROR. PCS is
+	// excluded here and gets its own plan when the BCU/PCS page is started.
+	m_scheduler.setPlan(PollPlan::fromPointTable(m_pointTable, 10, 1000,
+			QString(), {QStringLiteral("PCS")}));
 	m_scheduler.setSlave(ui->slaveID->value());
 	m_scheduler.setMaxRetries(1);
 }
@@ -1047,7 +1095,6 @@ bool MainWindow::ensureSessionConfigured()
 	if (m_session && m_session->isOpen())
 		return true;
 
-	QVector<ModbusSession *> openSessions;
 	const QVector<ModbusSession *> candidates = {
 		ui->rtuSettingsWidget->session(),
 		ui->asciiSettingsWidget->session(),
@@ -1055,18 +1102,17 @@ bool MainWindow::ensureSessionConfigured()
 	};
 	for (ModbusSession *candidate : candidates)
 	{
-		if (candidate && candidate->isOpen() && !openSessions.contains(candidate))
-			openSessions.append(candidate);
+		if (candidate && candidate->isOpen())
+		{
+			// Multiple independent protocol sessions are valid. Keep the most
+			// recently selected one as the manual-request channel.
+			m_session = candidate;
+			m_transport.setSession(candidate);
+			configureScheduler(candidate);
+			return true;
+		}
 	}
-	if (openSessions.size() != 1)
-		return false;
-
-	// Recover the binding if a settings widget connected successfully before
-	// MainWindow received its activation signal.
-	m_session = openSessions.first();
-	m_transport.setSession(m_session);
-	configureScheduler(m_session);
-	return true;
+	return false;
 }
 
 void MainWindow::startBackgroundAcquisition()
@@ -1076,10 +1122,16 @@ void MainWindow::startBackgroundAcquisition()
 		setStatusError(tr("No active Modbus connection. Enable Active on the RTU, TCP or ASCII connection tab."));
 		return;
 	}
+	// PCS is a passive slave: BCU sends 0x10 writes and receives a reply.
+	// Background acquisition only polls the BCU/EMS points.
+	m_scheduler.setPlan(PollPlan::fromPointTable(m_pointTable, 10, 1000,
+			QString(), {QStringLiteral("PCS")}));
 	m_scheduler.setSlave(ui->slaveID->value());
 	m_scheduler.start();
 	if (m_businessView)
 		m_businessView->setAcquisitionRunning(m_scheduler.isRunning());
+	if (m_pcsView)
+		m_pcsView->setAcquisitionRunning(m_scheduler.isRunning());
 }
 
 void MainWindow::stopBackgroundAcquisition()
@@ -1088,10 +1140,23 @@ void MainWindow::stopBackgroundAcquisition()
 		m_scheduler.stop();
 	if (m_businessView)
 		m_businessView->setAcquisitionRunning(false);
+	if (m_pcsView)
+		m_pcsView->setAcquisitionRunning(false);
 }
 
 void MainWindow::onControlWriteRequested(const QString &pointKey, const QString &valueText)
 {
+	if (m_controlWriteWatcher && m_controlWriteWatcher->isRunning())
+	{
+		setStatusError(tr("A control write is already in progress; wait for its result."));
+		return;
+	}
+	if (ui->rtuSettingsWidget->isSlaveMode() &&
+		(!m_session || !m_session->isOpen() || m_session == ui->rtuSettingsWidget->session()))
+	{
+		setStatusError(tr("RTU PCS Slave mode only responds to BCU writes; activate TCP Active to send Rack Control commands."));
+		return;
+	}
 	if (m_scheduler.isRunning())
 	{
 		setStatusError(tr("Stop background acquisition before writing a control"));
@@ -1147,18 +1212,64 @@ void MainWindow::onControlWriteRequested(const QString &pointKey, const QString 
 		return;
 	}
 
-	const ControlTransactionResult transaction = ControlTransaction::execute(
-		m_transport, *point, ui->slaveID->value(), function, raw, userRole);
-	recordWriteAudit(ui->slaveID->value(), function, point->address, point->count,
-			transaction.accepted ? point->count : -1, raw, transaction.error);
+	// Modbus I/O can wait for a device response. Keep it out of the GUI
+	// thread so a missing or delayed response cannot make the whole window
+	// appear hung. The scheduler is already stopped above, so this is the
+	// only client transaction using the selected session while it runs.
+	m_pendingControlPoint = *point;
+	m_pendingControlSlave = ui->slaveID->value();
+	m_pendingControlFunction = function;
+	m_pendingControlValues = raw;
+	ModbusSession *session = m_session;
+	m_pendingControlSession = session;
+	// Keep the monitor callbacks attached while the worker performs the
+	// transaction. The request and response must remain visible in Bus Monitor;
+	// acquisition is stopped above, so this single exchange cannot flood the UI.
+	auto *watcher = new QFutureWatcher<ControlTransactionResult>(this);
+	m_controlWriteWatcher = watcher;
+	connect(watcher, &QFutureWatcher<ControlTransactionResult>::finished,
+			this, &MainWindow::onControlWriteFinished);
+	m_statusText->setText(tr("Sending control: %1").arg(point->displayName));
+	m_statusInd->setStyleSheet("background: #da0;");
+	watcher->setFuture(QtConcurrent::run([session, pointCopy = m_pendingControlPoint,
+										 slave = m_pendingControlSlave,
+										 function,
+										 raw,
+										 userRole]() {
+		ModbusSessionTransport transport(session);
+		const bool verifyReadback = pointCopy.block != QStringLiteral("Rack Control");
+		return ControlTransaction::execute(transport, pointCopy, slave, function, raw,
+										 userRole, verifyReadback);
+	}));
+}
+
+void MainWindow::onControlWriteFinished()
+{
+	if (!m_controlWriteWatcher)
+		return;
+	const ControlTransactionResult transaction = m_controlWriteWatcher->result();
+	const QString controlName = m_pendingControlPoint.displayName;
 	if (!transaction.accepted)
 	{
 		setStatusError(tr("Control write failed: %1").arg(transaction.error));
-		return;
 	}
-	m_statusText->setText(tr("Control written and readback verified: %1").arg(point->displayName));
-	m_statusInd->setStyleSheet("background: #0b0;");
-	m_statusTimer->start(3000);
+	else
+	{
+		const QString status = m_pendingControlPoint.block == QStringLiteral("Rack Control")
+			? tr("Control write acknowledged: %1").arg(controlName)
+			: tr("Control written and readback verified: %1").arg(controlName);
+		m_statusText->setText(status);
+		m_statusInd->setStyleSheet("background: #0b0;");
+		m_statusTimer->start(3000);
+	}
+	recordWriteAudit(m_pendingControlSlave, m_pendingControlFunction,
+			m_pendingControlPoint.address, m_pendingControlPoint.count,
+			transaction.accepted ? m_pendingControlPoint.count : -1,
+			m_pendingControlValues, transaction.error);
+	m_pendingControlSession = nullptr;
+	QFutureWatcher<ControlTransactionResult> *watcher = m_controlWriteWatcher;
+	m_controlWriteWatcher = nullptr;
+	watcher->deleteLater();
 }
 
 void MainWindow::onAlarmAcknowledgeRequested(const QString &sourceKey, int bit)
@@ -1216,6 +1327,8 @@ void MainWindow::onPollResult(const PollResult &result)
 	processAlarmTransitions(result);
 	if (m_businessView)
 		m_businessView->applyPollResult(result, m_pointTable, QStringLiteral("local"), ui->slaveID->value());
+	if (m_pcsView)
+		m_pcsView->applyPollResult(result, m_pointTable, QStringLiteral("local"), ui->slaveID->value());
 	if (!result.success)
 	{
 		setStatusError(tr("Poll failed: function 0x%1, address 0x%2, count %3: %4")
@@ -1224,11 +1337,13 @@ void MainWindow::onPollResult(const PollResult &result)
 			.arg(result.frame.count)
 			.arg(result.error));
 	}
-	if (m_dataRecordingEnabled && m_acquisitionStore.isOpen())
+	const QDateTime timestamp = QDateTime::currentDateTimeUtc();
+	if (m_dataRecordingEnabled && m_acquisitionStore.isOpen() &&
+		allowDatabaseWrite(QStringLiteral("local:%1:%2").arg(ui->slaveID->value()).arg(result.frame.block), timestamp))
 	{
 		QString storeError;
 		if (!m_acquisitionStore.recordPollResult(result, m_pointTable, QStringLiteral("local"),
-												ui->slaveID->value(), QDateTime::currentDateTimeUtc(), &storeError))
+															ui->slaveID->value(), timestamp, &storeError))
 			qWarning() << "failed to persist background poll:" << storeError;
 	}
 }
@@ -1287,16 +1402,106 @@ void MainWindow::onPollSchedulerError(const QString &message)
 	setStatusError(message);
 }
 
+void MainWindow::onSlaveRegistersWritten(int address, const QVector<quint16> &values)
+{
+    if (address < 0 || address > 0xffff || values.isEmpty())
+        return;
+
+    m_pendingSlaveWrite = PollResult();
+    m_pendingSlaveWrite.frame.block = QStringLiteral("PCS");
+    m_pendingSlaveWrite.frame.function = MODBUS_FC_WRITE_MULTIPLE_REGISTERS;
+    m_pendingSlaveWrite.frame.address = address;
+    m_pendingSlaveWrite.frame.count = values.size();
+    m_pendingSlaveWrite.values = values;
+    m_pendingSlaveWrite.success = true;
+    m_pendingSlaveWrite.attempts = 1;
+    m_pendingSlaveWrite.elapsedMs = 0;
+    if (m_slaveWriteFlushScheduled)
+        return;
+    m_slaveWriteFlushScheduled = true;
+    QTimer::singleShot(100, this, &MainWindow::flushSlaveWrite);
+}
+
+void MainWindow::flushSlaveWrite()
+{
+    m_slaveWriteFlushScheduled = false;
+    const PollResult result = m_pendingSlaveWrite;
+    if (!result.success || result.values.isEmpty())
+        return;
+    if (m_pcsView)
+        m_pcsView->applyPollResult(result, m_pointTable, QStringLiteral("bcu"), 1);
+    const QDateTime timestamp = QDateTime::currentDateTimeUtc();
+    if (m_dataRecordingEnabled && m_acquisitionStore.isOpen() &&
+        allowDatabaseWrite(QStringLiteral("bcu:1:%1").arg(result.frame.block), timestamp))
+    {
+        QString storeError;
+        if (!m_acquisitionStore.recordPollResult(result, m_pointTable,
+                                                 QStringLiteral("bcu"), 1,
+                                                 timestamp, &storeError))
+            qWarning() << "failed to persist PCS slave write:" << storeError;
+    }
+    m_statusText->setText(tr("PCS received BCU write: 0x%1 (%2 registers)")
+                          .arg(result.frame.address, 4, 16, QLatin1Char('0'))
+                          .arg(result.values.size()));
+    m_statusInd->setStyleSheet("background: #0b0;");
+    m_statusTimer->start(2000);
+}
+
+void MainWindow::onSlaveRawData(const QByteArray &frame, bool outgoing)
+{
+    if (!ui->rawDataAutoScroll->isChecked() || frame.isEmpty())
+        return;
+
+    QString line = outgoing ? QStringLiteral("<< Resp: ")
+                            : QStringLiteral("Req >> : ");
+    for (const unsigned char byte : frame)
+        line += QString::asprintf("%.2x ", byte);
+    m_pendingSlaveRawText += line + QLatin1Char('\n');
+    // Keep the pending UI payload bounded when the device is transmitting
+    // continuously. The protocol frame is still handled by the responder;
+    // this only limits diagnostic repaint work on the GUI thread.
+    if (m_pendingSlaveRawText.size() > 64 * 1024)
+        m_pendingSlaveRawText = m_pendingSlaveRawText.right(64 * 1024);
+    if (!m_slaveRawFlushScheduled)
+    {
+        m_slaveRawFlushScheduled = true;
+        QTimer::singleShot(100, this, &MainWindow::flushSlaveRawData);
+    }
+}
+
+void MainWindow::flushSlaveRawData()
+{
+    m_slaveRawFlushScheduled = false;
+    if (!ui->rawDataAutoScroll->isChecked() || m_pendingSlaveRawText.isEmpty())
+    {
+        m_pendingSlaveRawText.clear();
+        return;
+    }
+    ui->rawData->appendPlainText(m_pendingSlaveRawText.trimmed());
+    m_pendingSlaveRawText.clear();
+    ui->rawData->verticalScrollBar()->setValue(100000);
+}
+
 void MainWindow::resetStatus( void )
 {
 	m_statusText->setText( tr( "Ready" ) );
 	m_statusInd->setStyleSheet( "background: #aaa;" );
 }
 
+bool MainWindow::allowDatabaseWrite(const QString &key, const QDateTime &timestamp)
+{
+	const QDateTime previous = m_lastDatabaseWrite.value(key);
+	if (previous.isValid() && previous.msecsTo(timestamp) < 1000)
+		return false;
+	m_lastDatabaseWrite.insert(key, timestamp);
+	return true;
+}
+
 void MainWindow::pollForDataOnBus( void )
 {
-	if( m_session && !m_scheduler.isRunning() )
-		m_session->poll();
+	// Client traffic is handled by explicit requests and PollScheduler.
+	// Calling modbus_poll() here performs a blocking receive and can consume
+	// the response belonging to Rack Control or a manual request.
 }
 
 
@@ -1320,12 +1525,16 @@ void MainWindow::onRtuPortActive(bool active)
 			m_session->setMonitorCallbacks(MainWindow::stBusMonitorAddItem,
 											 MainWindow::stBusMonitorRawData);
 		}
-		m_tcpActive = false;
 	}
 	else {
-		stopBackgroundAcquisition();
-		m_transport.setSession(nullptr);
-		m_session = NULL;
+		if (m_session == ui->rtuSettingsWidget->session())
+		{
+			m_session = ui->tcpSettingsWidget->session()->isOpen()
+				? ui->tcpSettingsWidget->session() : nullptr;
+			m_transport.setSession(m_session);
+		}
+		if (!m_session)
+			stopBackgroundAcquisition();
 	}
 }
 
@@ -1338,19 +1547,21 @@ void MainWindow::onAsciiPortActive(bool active)
 			m_session->setMonitorCallbacks(MainWindow::stBusMonitorAddItem,
 											 MainWindow::stBusMonitorRawData);
         }
-        m_tcpActive = false;
     }
     else {
-		stopBackgroundAcquisition();
-		m_transport.setSession(nullptr);
-        m_session = NULL;
+		if (m_session == ui->asciiSettingsWidget->session())
+		{
+			m_session = ui->tcpSettingsWidget->session()->isOpen()
+				? ui->tcpSettingsWidget->session() : nullptr;
+			m_transport.setSession(m_session);
+		}
+		if (!m_session)
+			stopBackgroundAcquisition();
     }
 }
 
 void MainWindow::onTcpPortActive(bool active)
 {
-	m_tcpActive = active;
-
 	if (active) {
 		m_session = ui->tcpSettingsWidget->session();
 		configureScheduler(m_session);
@@ -1360,9 +1571,14 @@ void MainWindow::onTcpPortActive(bool active)
 		}
 	}
 	else {
-		stopBackgroundAcquisition();
-		m_transport.setSession(nullptr);
-		m_session = NULL;
+		if (m_session == ui->tcpSettingsWidget->session())
+		{
+			m_session = ui->rtuSettingsWidget->session()->isOpen()
+				? ui->rtuSettingsWidget->session() : nullptr;
+			m_transport.setSession(m_session);
+		}
+		if (!m_session)
+			stopBackgroundAcquisition();
 	}
 }
 

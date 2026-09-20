@@ -274,6 +274,9 @@ static int _connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen,
     int wsaError = 0;
     if (rc == -1) {
         wsaError = WSAGetLastError();
+        /* Winsock does not update errno. Keep libmodbus callers from
+         * reporting a stale error such as EINVAL after connect fails. */
+        errno = wsaError;
     }
 
     if (wsaError == WSAEWOULDBLOCK || wsaError == WSAEINPROGRESS) {
@@ -291,6 +294,12 @@ static int _connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen,
         rc = select(sockfd + 1, NULL, &wset, NULL, &tv);
         if (rc <= 0) {
             /* Timeout or fail */
+            if (rc == 0)
+                errno = ETIMEDOUT;
+#ifdef OS_WIN32
+            else
+                errno = WSAGetLastError();
+#endif
             return -1;
         }
 
@@ -299,7 +308,14 @@ static int _connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen,
         if (rc == 0 && optval == 0) {
             return 0;
         } else {
+#ifdef OS_WIN32
+            if (rc != 0)
+                errno = WSAGetLastError();
+            else
+                errno = optval;
+#else
             errno = ECONNREFUSED;
+#endif
             return -1;
         }
     }

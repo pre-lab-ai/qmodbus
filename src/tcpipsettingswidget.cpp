@@ -10,8 +10,27 @@ TcpIpSettingsWidget::TcpIpSettingsWidget(QWidget *parent) :
 {
     ui->setupUi(this);
     ui->edPort->setValidator(new QIntValidator(1, 65535, this));
+    ui->edNetworkAddress->setToolTip(
+        tr("Client mode connects to this remote address. Slave mode listens on this local address; "
+           "if it is not assigned to this PC, the responder falls back to all local IPv4 interfaces."));
     // Connection parameters must be editable before Active is enabled.
     enableGuiItems(true);
+    connect(ui->serverMode, &QCheckBox::toggled, this, &TcpIpSettingsWidget::setSlaveMode);
+    connect(&m_responder, &ModbusResponder::responderStarted, this,
+            [this]() { emit slavePortActive(true); });
+    connect(&m_responder, &ModbusResponder::responderStopped, this,
+            [this]() { emit slavePortActive(false); });
+    connect(&m_responder, &ModbusResponder::holdingRegistersWritten, this,
+            &TcpIpSettingsWidget::slaveRegistersWritten);
+    connect(&m_responder, &ModbusResponder::rawDataReceived, this,
+            [this](const QByteArray &frame) { emit slaveRawData(frame, false); });
+    connect(&m_responder, &ModbusResponder::rawDataSent, this,
+            [this](const QByteArray &frame) { emit slaveRawData(frame, true); });
+    connect(&m_responder, &ModbusResponder::error, this,
+            [this](const QString &message) {
+                ui->serverMode->setChecked(false);
+                emit connectionError(message);
+            });
 }
 
 TcpIpSettingsWidget::~TcpIpSettingsWidget()
@@ -76,6 +95,27 @@ void TcpIpSettingsWidget::on_cbEnabled_clicked(bool checked)
         enableGuiItems(true);
         emit tcpPortActive( false );
     }
+}
+
+void TcpIpSettingsWidget::setSlaveMode(bool enabled)
+{
+    if (!enabled)
+    {
+        m_responder.stop();
+        return;
+    }
+
+    const int port = ui->edPort->text().toInt();
+    if (port < 1 || port > 65535)
+    {
+        ui->serverMode->setChecked(false);
+        emit connectionError(tr("Please enter a valid Modbus TCP slave port (1-65535)."));
+        return;
+    }
+    // The server binds locally. The configured address is used when it is a
+    // local interface; 0.0.0.0 remains available for all local interfaces.
+    if (!m_responder.startTcp(ui->edNetworkAddress->text().trimmed(), port, 1))
+        ui->serverMode->setChecked(false);
 }
 
 bool TcpIpSettingsWidget::tcpConnect()
